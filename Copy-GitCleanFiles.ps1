@@ -3,17 +3,19 @@
     Copies all non-gitignored files from a source Git directory to a destination directory.
 .DESCRIPTION
     Queries Git for all tracked and untracked files that are not ignored by standard
-    gitignore rules, and copies them to a clean destination directory while preserving
-    the folder hierarchy.
+    gitignore rules (plus any custom exclusions), and copies them to a clean destination
+    directory while preserving the folder hierarchy.
 .PARAMETER Source
     The source folder path (must be inside a Git work tree).
 .PARAMETER Destination
     The destination folder path.
+.PARAMETER Exclude
+    Additional file or folder glob patterns to exclude from the copy operation.
 .PARAMETER Force
     Bypasses the interactive 'confirm destruction' prompt when overwriting an existing destination.
 .EXAMPLE
     .\Copy-GitCleanFiles.ps1 -Source ./my-repo -Destination /tmp/backup
-    .\Copy-GitCleanFiles.ps1 -s . -d ../output -WhatIf
+    .\Copy-GitCleanFiles.ps1 -s . -d ../output -Exclude "*.lock", "docs/**" -WhatIf
 #>
 [CmdletBinding(SupportsShouldProcess = $true)]
 param (
@@ -24,6 +26,10 @@ param (
     [Parameter(Mandatory = $true, Position = 1, HelpMessage = "Destination folder path.")]
     [Alias("d", "Dest")]
     [string]$Destination,
+
+    [Parameter(Mandatory = $false, HelpMessage = "Additional file or folder glob patterns to exclude.")]
+    [Alias("e", "Excl")]
+    [string[]]$Exclude = @(),
 
     [Parameter(HelpMessage = "Bypass interactive destruction confirmation.")]
     [switch]$Force
@@ -110,8 +116,31 @@ try {
     $OriginalEncoding = [Console]::OutputEncoding
     [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-    # Fetch tracked and untracked files excluding standard .gitignore rules (-c core.quotepath=false prevents octal escaping)
-    $FilesToCopy = @(git -c core.quotepath=false ls-files --cached --others --exclude-standard)
+    # Base arguments to fetch tracked and untracked files excluding standard .gitignore rules
+    # (-c core.quotepath=false prevents octal escaping)
+    $GitArgs = @(
+        '-c', 'core.quotepath=false',
+        'ls-files',
+        '--cached',
+        '--others',
+        '--exclude-standard'
+    )
+
+    # Append custom pathspec exclusions if -Exclude is provided
+    if ($Exclude.Count -gt 0) {
+        $GitArgs += '--'
+        $GitArgs += '.'
+        foreach ($Pattern in $Exclude) {
+            if (-not [string]::IsNullOrWhiteSpace($Pattern)) {
+                # Normalize backslashes to forward slashes for Git pathspecs
+                $CleanPattern = $Pattern.Trim() -replace '\\', '/'
+                # Use :(exclude,glob) so glob patterns work across both tracked and untracked files
+                $GitArgs += ":(exclude,glob)$CleanPattern"
+            }
+        }
+    }
+
+    $FilesToCopy = @(git @GitArgs)
 
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to execute 'git ls-files'. Ensure '$ResolvedSource' is a valid Git repository."
